@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+
 from .extractor import extract, collect_sources
 from .chunker import chunk_document
 from .classifier import classify_chunk
@@ -17,7 +18,6 @@ def main():
     parser.add_argument("sources", help="Directory or file path containing source documents")
     parser.add_argument("--output", default=".context", help="Output directory (default: .context/)")
     parser.add_argument("--tokens-only", action="store_true", help="Only count tokens, skip LLM classification")
-    parser.add_argument("--sort", default="throughput", choices=["throughput", "latency", "price"], help="OpenRouter provider sort (default: throughput)")
     args = parser.parse_args()
 
     sources = collect_sources(args.sources)
@@ -45,7 +45,7 @@ def main():
 
         chunks = chunk_document(doc)
         for ch in chunks:
-            item = classify_chunk(ch, src, sort=args.sort)
+            item = classify_chunk(ch, src)
             all_chunk_items.append(item)
             logger.info("  chunk %d classified (model: %s)", ch["index"], item.model_used)
 
@@ -57,11 +57,11 @@ def main():
         return
 
     if not all_chunk_items:
-        logger.error("No content was classified. Check your sources and OpenRouter API key.")
+        logger.error("No content was classified. Check your sources and ensure Ollama is running.")
         sys.exit(1)
 
     logger.info("Merging %d chunk results...", len(all_chunk_items))
-    output_data = merge(all_chunk_items, sort=args.sort)
+    output_data = merge(all_chunk_items)
 
     combined_raw = "\n".join(all_raw_texts)
     comparison = compute_comparison(combined_raw, {

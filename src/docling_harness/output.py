@@ -7,14 +7,12 @@ def write_output(output: HarnessOutput, comparison: CostComparison, output_dir: 
     out = pathlib.Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    output.meta = {
-        "sources_processed": source_count,
-        "cost_comparison": {
-            "raw_tokens": comparison.raw_tokens,
-            "processed_tokens": comparison.processed_tokens,
-            "reduction_pct": comparison.reduction_pct,
-            "break_even_queries": comparison.break_even_queries,
-        },
+    output.meta["sources_processed"] = source_count
+    output.meta["cost_comparison"] = {
+        "raw_tokens": comparison.raw_tokens,
+        "processed_tokens": comparison.processed_tokens,
+        "reduction_pct": comparison.reduction_pct,
+        "break_even_queries": comparison.break_even_queries,
     }
 
     data = {
