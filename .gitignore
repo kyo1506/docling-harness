@@ -23,3 +23,17 @@ build/
 # Test fixtures (real documents, not tracked)
 *.pdf
 
+# Visual Studio Code # 
+**/.vscode/
+
+# Opencode
+opencode.json
+.openspec/
+.opencode/
+openspec/
+
+# Scripts env
+scripts/.env
+
+# Archives
+*.7z

@@ -2,9 +2,9 @@ import argparse
 import logging
 import sys
 
-from .extractor import extract, collect_sources
+from .extractor import extract, collect_sources, resolve_accelerator, set_accelerator
 from .chunker import chunk_document, group_chunks
-from .classifier import classify_chunk, set_llm_config
+from .classifier import classify_chunks, set_llm_config
 from .rules_extractor import structured_extract, merge_deterministic, apply_requirements
 from .merger import merge
 from .token_counter import compute_comparison, count_tokens
@@ -20,6 +20,10 @@ def main():
     parser.add_argument("--output", default=".context", help="Output directory (default: .context/)")
     parser.add_argument("--tokens-only", action="store_true", help="Only count tokens, skip LLM classification")
     parser.add_argument("--model", help="Override the LLM model (overrides HARNESS_LLM_MODEL)")
+    parser.add_argument("--accelerator", default="auto", choices=["auto", "cuda", "cpu"],
+                        help="Docling accelerator device (default: auto)")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Concurrent LLM classification calls (default: 4)")
     args = parser.parse_args()
 
     sources = collect_sources(args.sources)
@@ -29,9 +33,13 @@ def main():
 
     logger.info("Found %d source(s)", len(sources))
 
+    device = resolve_accelerator(args.accelerator)
+    resolved = set_accelerator(device)
+    logger.info("Accelerator: %s (requested: %s)", resolved.value, device.value)
+
     if not args.tokens_only:
         base_url, _, model = set_llm_config(args.model)
-        logger.info("LLM backend: %s (model: %s)", base_url, model)
+        logger.info("LLM backend: %s (model: %s, workers: %d)", base_url, model, args.workers)
 
     all_raw_texts = []
     all_chunk_items = []
@@ -50,10 +58,10 @@ def main():
             continue
 
         groups = group_chunks(chunk_document(doc))
-        for i, ch in enumerate(groups):
+        src_ref = f"file:{src}"
+        items = classify_chunks(groups, [src] * len(groups), max_workers=args.workers)
+        for i, (ch, item) in enumerate(zip(groups, items)):
             heading = ch.get("heading_path", "")
-            src_ref = f"file:{src}"
-            item = classify_chunk(ch, src)
             det = structured_extract(ch["text"], heading, src_ref)
             item.items = merge_deterministic(item.items, det)
             item.items = apply_requirements(item.items, heading, src_ref, ch["text"])

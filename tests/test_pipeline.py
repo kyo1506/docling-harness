@@ -8,10 +8,10 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "src"))
 
-from docling_harness.extractor import extract, collect_sources
+from docling_harness.extractor import extract, collect_sources, resolve_accelerator, set_accelerator, _build_converter
 from docling_harness.chunker import chunk_document, group_chunks
 from docling_harness.rules_extractor import structured_extract, merge_deterministic, requirements_from_headings, apply_requirements
-from docling_harness.classifier import merge_items, resolve_llm_config
+from docling_harness.classifier import merge_items, resolve_llm_config, classify_chunks
 from docling_harness.token_counter import count_tokens, compute_comparison
 from docling_harness.models import ChunkItem, HarnessOutput, CostComparison
 from docling_harness.output import write_output
@@ -379,6 +379,68 @@ def test_comparison_negative_reduction():
     assert comp.reduction_pct < 0, f"expected negative reduction, got {comp.reduction_pct}"
     assert comp.break_even_queries == 999
     print(f"  OK: negative reduction reported ({comp.reduction_pct}%)")
+
+
+def test_resolve_accelerator():
+    """14.1 Test accelerator name resolution maps auto|cuda|cpu and rejects unknown values."""
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    assert resolve_accelerator("auto") == AcceleratorDevice.AUTO
+    assert resolve_accelerator("cuda") == AcceleratorDevice.CUDA
+    assert resolve_accelerator("cpu") == AcceleratorDevice.CPU
+    assert resolve_accelerator("AUTO") == AcceleratorDevice.AUTO
+    try:
+        resolve_accelerator("gpu")
+        assert False, "unknown accelerator must raise"
+    except ValueError:
+        pass
+    print("  OK: resolve_accelerator maps auto|cuda|cpu and rejects unknown values")
+
+
+def test_classify_chunks_ordering():
+    """14.2 Test classify_chunks keeps results associated with their source chunks
+    even when the pool completes them out of order."""
+    import time
+    from docling_harness import classifier as clf
+
+    chunks = [
+        {"heading_path": "", "text": "FIRST"},
+        {"heading_path": "", "text": "SECOND"},
+    ]
+    sources = ["a.pdf", "b.pdf"]
+
+    class _FakeResp:
+        model = "fake-model"
+        usage = type("_U", (), {"total_tokens": 5})()
+
+        def __init__(self, content):
+            self.choices = [type("_C", (), {"message": type("_M", (), {"content": content})()})()]
+
+    class _FakeCompletions:
+        def create(self, *args, **kwargs):
+            text = kwargs["messages"][1]["content"]
+            # SECOND completes first despite being submitted second
+            if "SECOND" in text:
+                time.sleep(0.05)
+            return _FakeResp(json.dumps({"echo": text.split("Content:\n")[-1].strip()}))
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = type("_Chat", (), {"completions": _FakeCompletions()})()
+
+    old_client, old_config = clf._client, clf._config
+    clf._client = _FakeClient()
+    clf._config = ("http://x", "k", "m")
+    try:
+        results = clf.classify_chunks(chunks, sources, max_workers=2)
+    finally:
+        clf._client, clf._config = old_client, old_config
+
+    assert len(results) == 2
+    assert results[0].items.get("echo") == "FIRST", "result must map back to first chunk"
+    assert results[1].items.get("echo") == "SECOND", "result must map back to second chunk"
+    assert results[0].source == "file:a.pdf"
+    assert results[1].source == "file:b.pdf"
+    print("  OK: classify_chunks preserves chunk association despite out-of-order completion")
 
 
 if __name__ == "__main__":

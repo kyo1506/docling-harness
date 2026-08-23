@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI
 from .models import ChunkItem
 from .prompts import CLASSIFY_SYSTEM_PROMPT
@@ -58,6 +59,26 @@ def classify_chunk(chunk: dict, source_path: str) -> ChunkItem:
         model_used=model_used,
         tokens_used=tokens_used,
     )
+
+
+def classify_chunks(chunks: list[dict], sources: list[str], max_workers: int = 4) -> list[ChunkItem]:
+    """Classify section groups concurrently, returning results in submission order.
+
+    Each chunk is paired with its source path by index, so results stay associated
+    with the correct section group even when the pool finishes them out of order.
+    `max_workers=1` reproduces today's sequential behavior.
+    """
+    if not chunks:
+        return []
+    results = [None] * len(chunks)
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        futures = {
+            executor.submit(classify_chunk, chunk, sources[i] if i < len(sources) else ""): i
+            for i, chunk in enumerate(chunks)
+        }
+        for future, i in futures.items():
+            results[i] = future.result()
+    return results
 
 
 def _call_llm(client, system_prompt: str, user_msg: str):

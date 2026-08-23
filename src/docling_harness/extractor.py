@@ -2,13 +2,74 @@ import os
 import pathlib
 import tempfile
 import httpx
-from docling.document_converter import DocumentConverter
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 
 AUDIO_VIDEO_EXTENSIONS = {".mp3", ".wav", ".mp4", ".mov", ".webm", ".m4a", ".ogg"}
 URL_PREFIXES = ("http://", "https://")
 
-converter = DocumentConverter()
+
+_ACCELERATOR_BY_NAME = {
+    "auto": AcceleratorDevice.AUTO,
+    "cuda": AcceleratorDevice.CUDA,
+    "cpu": AcceleratorDevice.CPU,
+}
+
+
+def resolve_accelerator(name: str = "auto") -> AcceleratorDevice:
+    """Map a CLI accelerator name to its device enum, raising on unknown values."""
+    key = (name or "auto").lower()
+    if key not in _ACCELERATOR_BY_NAME:
+        raise ValueError(f"Unknown accelerator '{name}'. Expected one of: auto, cuda, cpu")
+    return _ACCELERATOR_BY_NAME[key]
+
+
+def _resolve_device(device: AcceleratorDevice) -> AcceleratorDevice:
+    """Map AUTO to CUDA when a GPU is present (avoids docling's slow AUTO path on ROCm),
+    else fall back to CPU."""
+    if device is AcceleratorDevice.AUTO:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return AcceleratorDevice.CUDA
+        except ImportError:
+            pass
+        return AcceleratorDevice.CPU
+    return device
+
+
+def _build_converter(device: AcceleratorDevice = AcceleratorDevice.AUTO) -> DocumentConverter:
+    resolved = _resolve_device(device)
+    # On ROCm, docling's sdpa attention needs this flag for the fast path.
+    if resolved is AcceleratorDevice.CUDA:
+        os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    # batch 16: safe on 16 GB for dense/high-res PDFs; 64 OOMs and loses pages.
+    pipeline_options = PdfPipelineOptions(
+        accelerator_options=AcceleratorOptions(device=resolved),
+        layout_batch_size=16,
+        ocr_batch_size=16,
+        ocr_options=RapidOcrOptions(backend="torch", lang=["pt"]),
+    )
+    return DocumentConverter(format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+    })
+
+
+converter = _build_converter()
+
+
+def set_accelerator(device: AcceleratorDevice) -> AcceleratorDevice:
+    """Rebuild the shared converter with a different accelerator device.
+
+    Returns the resolved device (AUTO becomes CUDA or CPU), so callers can log it.
+    """
+    global converter
+    resolved = _resolve_device(device)
+    converter = _build_converter(device)
+    return resolved
 
 
 def _is_url(source: str) -> bool:

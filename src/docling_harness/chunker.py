@@ -6,6 +6,10 @@ chunker = HierarchicalChunker()
 _SECTION_RE = re.compile(r"^\d+(?:\.\d+)*\.?\s*\S")
 _RULE_PATTERN_RE = re.compile(r"RQ\d+-R[NC]\d+|RN\d+", re.I)
 
+# Long-form docs (books, manuals) without numbered headings collapse into a single
+# oversized group otherwise, which OOMs the LLM context. Split groups past this size.
+_MAX_GROUP_CHARS = 4000
+
 
 def chunk_document(docling_document):
     chunks = list(chunker.chunk(docling_document))
@@ -26,10 +30,12 @@ def chunk_document(docling_document):
 
 
 def group_chunks(chunks: list[dict]) -> list[dict]:
-    """Reassemble hierarchical fragments into top-level numbered-section groups.
+    """Reassemble hierarchical fragments into section groups.
 
     Fragments under running-header headings are absorbed into the current section;
     groups shorter than 40 chars with no rule/criterion pattern are dropped.
+    Long-form docs (no numbered headings) are split by size so no group overflows
+    the LLM context.
     """
     groups = []
     current = None
@@ -38,7 +44,8 @@ def group_chunks(chunks: list[dict]) -> list[dict]:
         text = c.get("text", "").strip()
         heading = c.get("heading_path", "").strip()
         is_section = bool(_SECTION_RE.match(heading))
-        if current is None or (is_section and heading != current_heading):
+        oversized = current is not None and len(current["text"]) >= _MAX_GROUP_CHARS
+        if current is None or (is_section and heading != current_heading) or oversized:
             if current is not None:
                 groups.append(current)
             current = {"index": len(groups), "text": text, "heading_path": heading}

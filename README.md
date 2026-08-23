@@ -16,9 +16,17 @@ pip install -e .
 
 **Prerequisites:**
 - [Ollama](https://ollama.ai) installed and running
-- Pull the model: `ollama pull mistral:7b`
+- Pull the model: `ollama pull qwen2.5:14b`
 
 The classifier connects to Ollama at `http://localhost:11434` — no API keys or accounts needed.
+
+## Uninstall
+
+The package name is `docling-harness` (from `pyproject.toml`), not the `harness` CLI command. `pip uninstall` needs the package name, not a path or the command name:
+
+```bash
+pip uninstall -y docling-harness
+```
 
 ## Usage
 
@@ -31,6 +39,12 @@ harness sources/ --output .my-context/
 
 # Token count only (skip LLM — fast, no API calls)
 harness sources/ --tokens-only
+
+# Accelerator device for Docling extraction (auto | cuda | cpu)
+harness sources/ --accelerator auto
+
+# Concurrent LLM classification calls
+harness sources/ --workers 4
 ```
 
 ## Pipeline
@@ -48,7 +62,7 @@ TokenCount(raw) → baseline token count
 HierarchicalChunker → splits by section
     │
     ▼
-Ollama (mistral:7b) → classify each chunk:
+Ollama (qwen2.5:14b) → classify each chunk:
     ├── specs (requirements, data models, business rules)
     ├── loop_engineering (triggers, verifiable outputs, feedback loops)
     └── harness_engineering (context rules, validation gates, tool requirements)
@@ -120,14 +134,49 @@ A short index (~25 lines) with links into `harness.json` — consumed directly b
 
 ## Considerations
 
-### Model choice
+### GPU acceleration
 
-The default backend is a local Ollama instance (`http://localhost:11434/v1`, model `qwen2.5:14b`) — no API key, content stays on the machine. For better quality, larger local models work:
+Docling extraction automatically uses the GPU when the installed torch build supports it (ROCm on AMD, CUDA on NVIDIA), falling back to CPU otherwise:
+
+- `--accelerator auto` (default): resolves to GPU (CUDA) when available, else CPU
+- `--accelerator cuda`: force GPU (ROCm is exposed as CUDA in torch)
+- `--accelerator cpu`: force CPU
+
+On AMD, install the ROCm build of torch and torchvision matching the local torch version:
 
 ```bash
-ollama pull qwen2.5:14b   # current default
-ollama pull llama3.1:8b   # faster, lower quality
+pip uninstall -y torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm7.2
 ```
+
+The triton kernels used by the layout model are JIT-compiled on first run, so the **first extraction after installing takes a few minutes**; subsequent runs reuse the on-disk cache and drop to seconds (~30s for a 50-page PDF on an RX 9060 XT vs ~120s on CPU). Compilation also needs a C toolchain and the Python dev headers: `sudo dnf install -y gcc gcc-c++ make python3-devel` (Fedora).
+
+When a GPU is detected, the tool resolves `auto` to the CUDA device (avoiding Docling's slow AUTO path on ROCm) and sets `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` for the optimized attention path. Ollama ships its own bundled ROCm runtime and detects the GPU automatically — no `OLLAMA_VULKAN` or `HSA_OVERRIDE_GFX_VERSION` hacks needed. Layout and OCR run with batched inference (batch 16, a safe default for 16 GB VRAM on dense PDFs — larger batches OOM and Docling silently drops pages). Table structure is not GPU-batched by Docling.
+
+### Optional formats
+
+Docling-slim ships lightweight by default; some formats need extra packages:
+
+```bash
+# OpenDocument (.odt, .ods, .odp) — fails with "No module named 'odfdo'" otherwise
+pip install "docling-slim[format-opendocument]"
+```
+
+Other optional engines (easyocr/surya OCR, pydub/whisper audio-video ASR) can be added via the corresponding `docling-slim` extras if you feed those inputs.
+
+### Long-form documents
+
+Documents without numbered section headings (books, manuals, unstructured PDFs) would otherwise collapse into a single oversized chunk that overflows the LLM context. `group_chunks` caps each group at ~4000 characters, so a 100-page book becomes several classifiable sections instead of one giant call.
+
+### Model choice
+
+The default backend is a local Ollama instance (`http://localhost:11434/v1`, model `qwen2.5:14b`) — no API key, content stays on the machine:
+
+```bash
+ollama pull qwen2.5:14b   # default — best quality/speed balance (benchmarked)
+```
+
+`qwen2.5:14b` was selected over `qwen2.5:7b` and `gpt-oss:20b` after a benchmark on real document chunks. The 7b model collapses the supplementary categories (loop/harness engineering come back empty), while gpt-oss:20b hallucinates — it fabricates rules from a "fora do escopo" (out-of-scope) section and returns nothing for the largest chunk, while being ~2x slower. Use `--model <name>` to run a different local model per run; lighter models trade quality for speed.
 
 ### Switching providers
 
@@ -156,7 +205,7 @@ Classification runs per document section group (each RQ/section classified as a 
 ## Requirements
 
 - Python ≥ 3.10
-- [Ollama](https://ollama.ai) with `mistral:7b` (or compatible model)
+- [Ollama](https://ollama.ai) with `qwen2.5:14b` (or compatible model)
 - Dependencies: `docling`, `docling-core`, `openai`, `token-count`, `tiktoken`, `httpx`
 
 ## Tests
