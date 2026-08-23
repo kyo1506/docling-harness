@@ -102,7 +102,7 @@ Write .context/harness.json + .context/AGENTS.md
 
 Every item carries a `source` field tracing back to the original document and section.
 
-When the LLM merge step fails (large documents exceeding the safe payload limit), the output falls back to a programmatic merge with deduplication on requirement description and business rule text. The `_meta.merge_fallback` flag is set to `true` in this case.
+The merge step is lossless and programmatic: every classified item is kept, deduplicated only on identical text, and assigned stable ids (`REQ-01`, `AC-01`, `BR-01`, `DM-01`). Structured business rules (`RQxx-RNxx`) and acceptance criteria (`RQxx-CAxx`) are additionally captured deterministically from the raw text so no rule is lost to LLM summarization. `_meta.merge_mode` is set to `"lossless_programmatic"`.
 
 ### `.context/AGENTS.md`
 
@@ -122,22 +122,36 @@ A short index (~25 lines) with links into `harness.json` — consumed directly b
 
 ### Model choice
 
-`mistral:7b` is the default model. It's fast on consumer hardware and handles JSON output reliably. For better classification quality, consider larger models:
+The default backend is a local Ollama instance (`http://localhost:11434/v1`, model `qwen2.5:14b`) — no API key, content stays on the machine. For better quality, larger local models work:
 
 ```bash
-ollama pull llama3.1:8b   # better reasoning, still fits 16GB RAM
-ollama pull qwen2.5:14b   # much better, needs 16GB+ RAM
+ollama pull qwen2.5:14b   # current default
+ollama pull llama3.1:8b   # faster, lower quality
 ```
 
-To switch models, edit the `model` parameter in `src/docling_harness/classifier.py`.
+### Switching providers
+
+The LLM backend is configurable via environment variables (or a `--model` flag), so a remote OpenAI-compatible provider needs no code change:
+
+```bash
+# DeepSeek (or any OpenAI-compatible endpoint)
+export HARNESS_LLM_BASE_URL=https://api.deepseek.com
+export HARNESS_LLM_API_KEY=sk-...
+export HARNESS_LLM_MODEL=deepseek-chat
+
+# one-off model override
+harness sources/ --model deepseek-chat
+```
+
+Precedence: `--model` flag > `HARNESS_LLM_MODEL` > default. Note: a remote provider sends document content off-machine — keep restricted documents on the local default.
 
 ### Large documents
 
-The merge step has a 100K character safe payload limit. For documents producing enough chunks to exceed this limit, the tool performs clean truncation at JSON object boundaries. If the merge LLM still produces no output, a programmatic fallback merge runs — all classified items are included, with deduplication on requirement descriptions and business rules. The `_meta.merge_fallback` flag in the output indicates when this occurred.
+Classification runs per document section group (each RQ/section classified as a unit), and the merge is a deterministic programmatic pass — there is no LLM merge and no payload size limit. The processed output grows roughly with the number of extracted rules; for dense specification documents the token "reduction" is modest because the document itself is rules.
 
 ### Classification quality
 
-`mistral:7b` works well for Portuguese and English content. Small chunks (< 100 chars) may produce hallucinated classifications — the model fills in plausible but invented content. This is an inherent limitation of small local models. For production use with large documents, a 14B+ model is recommended.
+`qwen2.5:14b` works well for Portuguese and English content. Small chunks (< 100 chars) may produce hallucinated classifications — the model fills in plausible but invented content. This is an inherent limitation of small local models. For production use with large documents, a 14B+ local model or a remote provider is recommended.
 
 ## Requirements
 

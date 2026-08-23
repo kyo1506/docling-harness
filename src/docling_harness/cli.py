@@ -3,8 +3,9 @@ import logging
 import sys
 
 from .extractor import extract, collect_sources
-from .chunker import chunk_document
-from .classifier import classify_chunk
+from .chunker import chunk_document, group_chunks
+from .classifier import classify_chunk, set_llm_config
+from .rules_extractor import structured_extract, merge_deterministic, apply_requirements
 from .merger import merge
 from .token_counter import compute_comparison, count_tokens
 from .output import write_output
@@ -18,6 +19,7 @@ def main():
     parser.add_argument("sources", help="Directory or file path containing source documents")
     parser.add_argument("--output", default=".context", help="Output directory (default: .context/)")
     parser.add_argument("--tokens-only", action="store_true", help="Only count tokens, skip LLM classification")
+    parser.add_argument("--model", help="Override the LLM model (overrides HARNESS_LLM_MODEL)")
     args = parser.parse_args()
 
     sources = collect_sources(args.sources)
@@ -26,6 +28,10 @@ def main():
         sys.exit(1)
 
     logger.info("Found %d source(s)", len(sources))
+
+    if not args.tokens_only:
+        base_url, _, model = set_llm_config(args.model)
+        logger.info("LLM backend: %s (model: %s)", base_url, model)
 
     all_raw_texts = []
     all_chunk_items = []
@@ -43,11 +49,17 @@ def main():
         if doc is None:
             continue
 
-        chunks = chunk_document(doc)
-        for ch in chunks:
+        groups = group_chunks(chunk_document(doc))
+        for i, ch in enumerate(groups):
+            heading = ch.get("heading_path", "")
+            src_ref = f"file:{src}"
             item = classify_chunk(ch, src)
+            det = structured_extract(ch["text"], heading, src_ref)
+            item.items = merge_deterministic(item.items, det)
+            item.items = apply_requirements(item.items, heading, src_ref, ch["text"])
+            item.source = f"{src_ref}§{heading}" if heading else src_ref
             all_chunk_items.append(item)
-            logger.info("  chunk %d classified (model: %s)", ch["index"], item.model_used)
+            logger.info("  section %d classified (model: %s)", i, item.model_used)
 
     if args.tokens_only:
         combined_raw = "\n".join(all_raw_texts)
@@ -70,8 +82,12 @@ def main():
         "harness_engineering": output_data.harness_engineering,
     })
 
-    logger.info("Raw tokens: %d → Processed tokens: %d (%.1f%% reduction)",
-                comparison.raw_tokens, comparison.processed_tokens, comparison.reduction_pct)
+    if comparison.reduction_pct >= 0:
+        logger.info("Raw tokens: %d → Processed tokens: %d (%.1f%% reduction)",
+                    comparison.raw_tokens, comparison.processed_tokens, comparison.reduction_pct)
+    else:
+        logger.info("Raw tokens: %d → Processed tokens: %d (%.1f%% growth)",
+                    comparison.raw_tokens, comparison.processed_tokens, -comparison.reduction_pct)
 
     write_output(output_data, comparison, args.output, len(sources))
     logger.info("Output written to %s/", args.output)

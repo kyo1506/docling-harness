@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ChunkItem:
     category: str
-    items: list[dict]
+    items: dict
     source: str
     model_used: str
     tokens_used: int = 0

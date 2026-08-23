@@ -1,6 +1,10 @@
+import re
 from docling_core.transforms.chunker import HierarchicalChunker
 
 chunker = HierarchicalChunker()
+
+_SECTION_RE = re.compile(r"^\d+(?:\.\d+)*\.?\s*\S")
+_RULE_PATTERN_RE = re.compile(r"RQ\d+-R[NC]\d+|RN\d+", re.I)
 
 
 def chunk_document(docling_document):
@@ -19,3 +23,37 @@ def chunk_document(docling_document):
             "heading_path": heading_path,
         })
     return results
+
+
+def group_chunks(chunks: list[dict]) -> list[dict]:
+    """Reassemble hierarchical fragments into top-level numbered-section groups.
+
+    Fragments under running-header headings are absorbed into the current section;
+    groups shorter than 40 chars with no rule/criterion pattern are dropped.
+    """
+    groups = []
+    current = None
+    current_heading = None
+    for c in chunks:
+        text = c.get("text", "").strip()
+        heading = c.get("heading_path", "").strip()
+        is_section = bool(_SECTION_RE.match(heading))
+        if current is None or (is_section and heading != current_heading):
+            if current is not None:
+                groups.append(current)
+            current = {"index": len(groups), "text": text, "heading_path": heading}
+            current_heading = heading
+        elif current is not None:
+            current["text"] += "\n" + text
+    if current is not None:
+        groups.append(current)
+
+    return [g for g in groups if _keep(g)]
+
+
+def _keep(group: dict) -> bool:
+    text = group["text"].strip()
+    if len(text) >= 40:
+        return True
+    return bool(_RULE_PATTERN_RE.search(text))
+
