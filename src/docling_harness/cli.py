@@ -2,9 +2,9 @@ import argparse
 import logging
 import sys
 
-from .extractor import extract, collect_sources, resolve_accelerator, set_accelerator
+from .extractor import extract, collect_sources, resolve_accelerator, set_accelerator, release_accelerator, free_ollama_vram
 from .chunker import chunk_document, group_chunks
-from .classifier import classify_chunks, set_llm_config
+from .classifier import classify_chunks, set_llm_config, resolve_llm_config
 from .rules_extractor import structured_extract, merge_deterministic, apply_requirements
 from .merger import merge
 from .token_counter import compute_comparison, count_tokens
@@ -40,25 +40,57 @@ def main():
     if not args.tokens_only:
         base_url, _, model = set_llm_config(args.model)
         logger.info("LLM backend: %s (model: %s, workers: %d)", base_url, model, args.workers)
+    else:
+        base_url = resolve_llm_config(args.model)[0]
+
+    # On GPU extraction, evict any resident Ollama model first: a 14B model left loaded
+    # by a previous chat/run (~15 GB at 32K context) otherwise OOMs Docling's layout pass.
+    if getattr(resolved, "value", None) == "cuda":
+        free_ollama_vram(base_url)
 
     all_raw_texts = []
-    all_chunk_items = []
+    pending = []  # (src, src_ref, groups) to classify in the second pass
 
+    # Pass 1 — extract & chunk every source. Docling runs on the GPU here while the
+    # LLM model is NOT loaded yet, so GPU extraction gets the full VRAM (no OOM from
+    # contending with the resident qwen3).
     for src in sources:
-        logger.info("Processing: %s", src)
+        logger.info("Extracting: %s", src)
         result = extract(src)
         raw_text = result.document.export_to_markdown()
         all_raw_texts.append(raw_text)
 
         if args.tokens_only:
+            del result
             continue
 
         doc = _get_doc(result)
-        if doc is None:
-            continue
+        if doc is not None:
+            groups = group_chunks(chunk_document(doc))
+            src_ref = f"file:{src}"
+            pending.append((src, src_ref, groups))
+        del result
 
-        groups = group_chunks(chunk_document(doc))
-        src_ref = f"file:{src}"
+    if args.tokens_only:
+        combined_raw = "\n".join(all_raw_texts)
+        raw_count = count_tokens(combined_raw)
+        logger.info("=== Token Count ===")
+        logger.info("Raw markdown tokens: %d (no processing applied)", raw_count)
+        return
+
+    if not pending:
+        logger.error("No documents could be extracted. Check your sources.")
+        sys.exit(1)
+
+    # Free Docling's GPU models before the LLM loads, so qwen3 and Docling never share
+    # the same VRAM. Keep_alive won't save us because a GPU doc's extraction starts the
+    # instant the previous doc's last LLM call finishes.
+    release_accelerator()
+
+    # Pass 2 — classify every chunk across all docs. The Ollama model loads once here
+    # (full GPU available) and stays warm for the whole classification pass.
+    all_chunk_items = []
+    for src, src_ref, groups in pending:
         items = classify_chunks(groups, [src] * len(groups), max_workers=args.workers)
         for i, (ch, item) in enumerate(zip(groups, items)):
             heading = ch.get("heading_path", "")
@@ -68,13 +100,6 @@ def main():
             item.source = f"{src_ref}§{heading}" if heading else src_ref
             all_chunk_items.append(item)
             logger.info("  section %d classified (model: %s)", i, item.model_used)
-
-    if args.tokens_only:
-        combined_raw = "\n".join(all_raw_texts)
-        raw_count = count_tokens(combined_raw)
-        logger.info("=== Token Count ===")
-        logger.info("Raw markdown tokens: %d (no processing applied)", raw_count)
-        return
 
     if not all_chunk_items:
         logger.error("No content was classified. Check your sources and ensure Ollama is running.")

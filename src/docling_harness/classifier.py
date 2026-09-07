@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _DEFAULTS = {
     "base_url": "http://localhost:11434/v1",
     "api_key": "ollama",
-    "model": "qwen2.5:14b",
+    "model": "qwen3:14b",
 }
 
 _client = None

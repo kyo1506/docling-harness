@@ -266,7 +266,7 @@ def test_resolve_llm_config_defaults():
     base, key, model = resolve_llm_config()
     assert base == "http://localhost:11434/v1"
     assert key == "ollama"
-    assert model == "qwen2.5:14b"
+    assert model == "qwen3:14b"
     print("  OK: resolve_llm_config defaults to local Ollama")
 
 

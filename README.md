@@ -2,7 +2,7 @@
 
 CLI tool that extracts, classifies, and consolidates documentation into structured, agent-ready context — optimized for Spec-Driven Development, Loop Engineering, and Harness Engineering workflows.
 
-Documents go in (PDF, DOCX, HTML, meeting transcripts, etc.). A compact JSON + AGENTS.md index comes out — ready for Claude Code, Codex, opencode, or any AI coding agent.
+Documents go in (PDF, DOCX, HTML, meeting transcripts, etc.). A compact JSON + AGENTS.md index comes out — ready for Claude Code, Codex, or any AI coding agent.
 
 ## Why
 
@@ -16,7 +16,7 @@ pip install -e .
 
 **Prerequisites:**
 - [Ollama](https://ollama.ai) installed and running
-- Pull the model: `ollama pull qwen2.5:14b`
+- Pull the model: `ollama pull qwen3:14b`
 
 The classifier connects to Ollama at `http://localhost:11434` — no API keys or accounts needed.
 
@@ -62,7 +62,7 @@ TokenCount(raw) → baseline token count
 HierarchicalChunker → splits by section
     │
     ▼
-Ollama (qwen2.5:14b) → classify each chunk:
+Ollama (qwen3:14b) → classify each chunk:
     ├── specs (requirements, data models, business rules)
     ├── loop_engineering (triggers, verifiable outputs, feedback loops)
     └── harness_engineering (context rules, validation gates, tool requirements)
@@ -120,7 +120,7 @@ The merge step is lossless and programmatic: every classified item is kept, dedu
 
 ### `.context/AGENTS.md`
 
-A short index (~25 lines) with links into `harness.json` — consumed directly by Claude Code, Codex, and opencode as project context.
+A short index (~25 lines) with links into `harness.json` — consumed directly by Claude Code, Codex, and other AI coding agents as project context.
 
 ## Supported formats
 
@@ -170,13 +170,13 @@ Documents without numbered section headings (books, manuals, unstructured PDFs) 
 
 ### Model choice
 
-The default backend is a local Ollama instance (`http://localhost:11434/v1`, model `qwen2.5:14b`) — no API key, content stays on the machine:
+The default backend is a local Ollama instance (`http://localhost:11434/v1`, model `qwen3:14b`) — no API key, content stays on the machine:
 
 ```bash
-ollama pull qwen2.5:14b   # default — best quality/speed balance (benchmarked)
+ollama pull qwen3:14b   # default — richer extraction (agent context)
 ```
 
-`qwen2.5:14b` was selected over `qwen2.5:7b` and `gpt-oss:20b` after a benchmark on real document chunks. The 7b model collapses the supplementary categories (loop/harness engineering come back empty), while gpt-oss:20b hallucinates — it fabricates rules from a "fora do escopo" (out-of-scope) section and returns nothing for the largest chunk, while being ~2x slower. Use `--model <name>` to run a different local model per run; lighter models trade quality for speed.
+`qwen3:14b` is the classifier default because a timed A/B on the same corpus showed it extracts **more complete context** than `qwen2.5:14b`, notably the automation/verification/tool categories that matter most for agent-ready output (loop_engineering: 60 items vs 21; tool_requirements: 37 vs 19). Its downside is speed: Qwen3's thinking mode cannot be disabled through Ollama's OpenAI-compatible endpoint (`/no_think` is ignored), so it is slower (~25 min vs ~15 min on the 2-doc corpus). If raw throughput matters more than coverage (e.g. processing many documents), run `--model qwen2.5:14b` to trade completeness for speed. Use `--model <name>` to switch per run.
 
 ### Switching providers
 
@@ -200,12 +200,12 @@ Classification runs per document section group (each RQ/section classified as a 
 
 ### Classification quality
 
-`qwen2.5:14b` works well for Portuguese and English content. Small chunks (< 100 chars) may produce hallucinated classifications — the model fills in plausible but invented content. This is an inherent limitation of small local models. For production use with large documents, a 14B+ local model or a remote provider is recommended.
+`qwen3:14b` works well for Portuguese and English content. Small chunks (< 100 chars) may produce hallucinated classifications — the model fills in plausible but invented content. This is an inherent limitation of small local models. For production use with large documents, a larger local model or a remote provider is recommended.
 
 ## Requirements
 
 - Python ≥ 3.10
-- [Ollama](https://ollama.ai) with `qwen2.5:14b` (or compatible model)
+- [Ollama](https://ollama.ai) with `qwen3:14b` (or compatible model)
 - Dependencies: `docling`, `docling-core`, `openai`, `token-count`, `tiktoken`, `httpx`
 
 ## Tests

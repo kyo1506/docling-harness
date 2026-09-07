@@ -1,3 +1,4 @@
+import gc
 import os
 import pathlib
 import tempfile
@@ -70,6 +71,51 @@ def set_accelerator(device: AcceleratorDevice) -> AcceleratorDevice:
     resolved = _resolve_device(device)
     converter = _build_converter(device)
     return resolved
+
+
+def release_accelerator():
+    """Drop the Docling converter (and its GPU-resident models) to free VRAM.
+
+    The shared converter caches its loaded pipeline models on the accelerator device.
+    Rebuilding it on CPU cheaply dereferences those GPU models (construction does not
+    load anything), then gc + torch.cuda.empty_cache() reclaim the memory so the next
+    GPU consumer (e.g. the Ollama LLM) does not contend for the same card.
+    """
+    global converter
+    converter = _build_converter(AcceleratorDevice.CPU)
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
+def free_ollama_vram(base_url: str | None = None):
+    """Best-effort: unload resident Ollama models to free VRAM for Docling's GPU pass.
+
+    Docling's GPU extraction and a resident 14B LLM (~15 GB at 32K context) cannot share a
+    16 GB card. Even in a two-pass run, an Ollama model left loaded by a prior chat/run keeps
+    that VRAM busy, so the PDF layout stage OOMs. This pings the local Ollama server to evict
+    whatever it has loaded. It only acts on a local Ollama endpoint and never raises.
+    """
+    host = (base_url or "http://localhost:11434/v1").replace("/v1", "").rstrip("/")
+    try:
+        if not host.startswith("http://localhost:11434") and not host.startswith("http://127.0.0.1:11434"):
+            return
+        ps = httpx.get(f"{host}/api/ps", timeout=5)
+        for m in ps.json().get("models", []):
+            name = m.get("model")
+            if not name:
+                continue
+            try:
+                # keep_alive=0 schedules an immediate unload once the model is idle.
+                httpx.post(f"{host}/api/generate", json={"model": name, "keep_alive": 0}, timeout=10)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _is_url(source: str) -> bool:
