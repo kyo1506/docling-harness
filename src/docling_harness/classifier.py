@@ -81,16 +81,38 @@ def classify_chunks(chunks: list[dict], sources: list[str], max_workers: int = 4
     return results
 
 
+def _max_tokens() -> int | None:
+    """Optional output cap via HARNESS_MAX_TOKENS.
+
+    Unset means "let the model decide", which is the historical behavior. Setting it
+    bounds a thinking model that would otherwise ramble past the JSON answer, at the
+    cost of truncating very large extractions.
+    """
+    raw = os.environ.get("HARNESS_MAX_TOKENS")
+    if not raw:
+        return None
+    try:
+        limit = int(raw)
+    except ValueError:
+        logger.warning("HARNESS_MAX_TOKENS invalido (%r); ignorando", raw)
+        return None
+    return limit if limit > 0 else None
+
+
 def _call_llm(client, system_prompt: str, user_msg: str):
     _, _, model = _config or resolve_llm_config()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
+    ]
+    limit = _max_tokens()
+    extra = {"max_tokens": limit} if limit else {}
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
             response_format={"type": "json_object"},
+            **extra,
         )
         return response
     except Exception as e:
@@ -98,10 +120,8 @@ def _call_llm(client, system_prompt: str, user_msg: str):
         time.sleep(1)
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
+            **extra,
         )
         return response
 

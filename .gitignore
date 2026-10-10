@@ -34,3 +34,7 @@ scripts/.env
 
 # Archives
 *.7z
+
+# Experiments: scripts e FINDINGS.md versionam; resultados e cache sao gerados (centenas de KB de JSON)
+experiments/results/
+experiments/cache/
